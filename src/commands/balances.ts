@@ -42,7 +42,8 @@ import {
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
 } from "../utils/wallets-util";
-import { readSeedKeystore } from "../utils/mnemonic";
+import { readWalletKeys } from "../utils/mnemonic";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 
 type BalancesOpts = {
   wallet?: string;
@@ -109,7 +110,7 @@ async function resolveWalletProfile(opts: {
   rpcUrl: string;
   chainId: bigint;
   walletDir: string;
-  mnemonic: string;
+  walletKeys: WalletKeys;
   password: string;
   resyncProfile: boolean;
   profileIndexFlag?: string;
@@ -147,7 +148,7 @@ async function resolveWalletProfile(opts: {
   try {
     const signer = resolveRegisterSigner({
       walletDir: opts.walletDir,
-      mnemonic: opts.mnemonic,
+      mnemonic: opts.walletKeys,
       password: opts.password,
       indexFlag: String(lookupIndex),
       ownerPriv: true,
@@ -567,14 +568,14 @@ export function registerBalancesCommand(program: Command): void {
         flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
-          readSeedKeystore(candidate, walletDir);
+          readWalletKeys(candidate, walletDir);
         },
       });
       if (!password) return;
 
-      let mnemonic: string;
+      let walletKeys: WalletKeys;
       try {
-        mnemonic = readSeedKeystore(password, walletDir);
+        walletKeys = readWalletKeys(password, walletDir);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -605,6 +606,17 @@ export function registerBalancesCommand(program: Command): void {
         cliErrorFromCaught(e);
         return;
       }
+      if (walletKeys.kind !== "seed") {
+        const skipped = includeProtocols.filter((p) => p !== "tornado");
+        if (skipped.length > 0 && !quietNonInteractive(opts.nonInteractive)) {
+          log.warn(
+            chalk.yellow(
+              `Ledger wallet: ${skipped.join(", ")} need the seed and are skipped (Tornado is supported).`
+            )
+          );
+        }
+        includeProtocols = includeProtocols.filter((p) => p === "tornado");
+      }
 
       const quiet = quietNonInteractive(opts.nonInteractive);
       const loading = manageSpinner(spinner(), quiet);
@@ -618,7 +630,7 @@ export function registerBalancesCommand(program: Command): void {
               rpcUrl,
               walletDir,
               password,
-              mnemonic,
+              walletKeys,
               chainId: chainIdBn,
               extraTokenAddresses,
               includeProtocols,
@@ -649,7 +661,7 @@ export function registerBalancesCommand(program: Command): void {
               rpcUrl,
               chainId: chainIdBn,
               walletDir,
-              mnemonic,
+              walletKeys,
               password,
               resyncProfile: !!opts.resyncProfile,
               profileIndexFlag: opts.profileIndex,

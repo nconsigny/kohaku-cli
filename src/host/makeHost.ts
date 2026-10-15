@@ -3,18 +3,25 @@ import { viem as kohakuViemProvider } from "@kohaku-eth/provider/viem";
 
 import { withChunkedGetLogs, withTransactionCount } from "./chunked-get-logs";
 import { makeKeystore, makeRailgunKeystore } from "./keystore";
+import { makeLedgerTornadoKeystore } from "./ledger-tornado.js";
 import { makeStealthAccountsStorage } from "../lib/stealth/storage";
 import { makeStorage, type PluginId } from "./storage";
 import { noteProtocolStorageFreshness } from "../utils/first-sync";
 import { tornadoExternalSyncForChain } from "../utils/saga-external-sync";
 import { kohakuFetch } from "../utils/tor";
 import type { KohakuPublicClient } from "../utils/rpc.js";
+import {
+  asWalletKeys,
+  HardwareWalletUnsupportedError,
+  type WalletKeys,
+} from "../utils/wallet-keys.js";
 
 export type MakeHostOptions = {
   rpc: KohakuPublicClient;
   walletDir: string;
   password: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys (Ledger wallets support Tornado only). */
+  mnemonic: string | WalletKeys;
   pluginId: PluginId;
   chainId?: bigint;
   externalSyncProvider?: Host["externalSyncProvider"];
@@ -52,14 +59,20 @@ export async function makeHost(options: MakeHostOptions): Promise<Host> {
     withTransactionCount(kohakuViemProvider(rpc))
   );
 
+  const keys = asWalletKeys(mnemonic);
+  if (keys.kind === "ledger" && pluginId !== "tc") {
+    throw new HardwareWalletUnsupportedError();
+  }
   const stealthStorage = makeStealthAccountsStorage(walletDir, password);
   const keystore =
-    pluginId === "rg"
-      ? makeRailgunKeystore(mnemonic)
-      : makeKeystore(mnemonic, {
-          stealthDelegatorPriv: (stealthIndex) =>
-            stealthStorage.getAccount(stealthIndex)?.priv ?? null,
-        });
+    keys.kind === "ledger"
+      ? makeLedgerTornadoKeystore(keys)
+      : pluginId === "rg"
+        ? makeRailgunKeystore(keys.mnemonic)
+        : makeKeystore(keys.mnemonic, {
+            stealthDelegatorPriv: (stealthIndex) =>
+              stealthStorage.getAccount(stealthIndex)?.priv ?? null,
+          });
   const network = makeNetwork();
   const externalSyncProvider =
     externalSyncProviderIn ??

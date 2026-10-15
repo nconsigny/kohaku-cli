@@ -35,6 +35,7 @@ import {
   resolveRegisterSigner,
 } from "../lib/names/ownership.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts.js";
+import { HardwareWalletUnsupportedError } from "../utils/wallet-keys.js";
 import { parseFromIndex } from "../lib/shield-flow.js";
 import {
   parseManagedName,
@@ -361,6 +362,11 @@ export function registerInitProfileCommand(program: Command): void {
       )
   ).action(async (opts: Opts) => {
     await withNameCommandContext(opts, async (ctx) => {
+      // The stealth meta-address derives from the seed.
+      if (ctx.walletKeys.kind !== "seed") {
+        throw new HardwareWalletUnsupportedError();
+      }
+      const mnemonic = ctx.walletKeys.mnemonic;
       // Default index 0: persist the first public account if the wallet is empty
       // so init-profile works without a prior next-fresh-address / balances run.
       const indexFlag = opts.index ?? "0";
@@ -372,7 +378,7 @@ export function registerInitProfileCommand(program: Command): void {
       if (idx === 0) {
         const publicStorage = makePublicAccountsStorage(
           ctx.walletDir,
-          ctx.mnemonic,
+          mnemonic,
           ctx.password
         );
         if (!publicStorage.getAccount(0)) {
@@ -387,7 +393,7 @@ export function registerInitProfileCommand(program: Command): void {
 
       const signer = resolveRegisterSigner({
         walletDir: ctx.walletDir,
-        mnemonic: ctx.mnemonic,
+        mnemonic: mnemonic,
         password: ctx.password,
         indexFlag,
         ownerPriv: ctx.ownerPriv,
@@ -411,7 +417,7 @@ export function registerInitProfileCommand(program: Command): void {
       const effectiveProtocol =
         nameChoice.mode === "name" ? nameChoice.protocol : opts.protocol;
 
-      const keypair = deriveStealthKeypair(ctx.mnemonic, ctx.chainId);
+      const keypair = deriveStealthKeypair(mnemonic, ctx.chainId);
       const stealthStorage = makeStealthAccountsStorage(
         ctx.walletDir,
         ctx.password
@@ -482,7 +488,7 @@ export function registerInitProfileCommand(program: Command): void {
           return;
         }
 
-        if (!signer.privateKey) {
+        if (!signer.signerKey) {
           throw new Error("Missing private key. Pass --owner-priv if needed.");
         }
         await maybeConfirm(
@@ -492,7 +498,7 @@ export function registerInitProfileCommand(program: Command): void {
         const [h] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
-          privateKey: signer.privateKey,
+          signer: signer.signerKey,
           from: signer.address,
           txs: [registryTx],
           nonInteractive: true,
@@ -700,7 +706,7 @@ export function registerInitProfileCommand(program: Command): void {
           return;
         }
 
-        if (!signer.privateKey) {
+        if (!signer.signerKey) {
           throw new Error("Missing private key. Pass --owner-priv if needed.");
         }
 
@@ -711,7 +717,7 @@ export function registerInitProfileCommand(program: Command): void {
         const [commitHash] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
-          privateKey: signer.privateKey,
+          signer: signer.signerKey,
           from: signer.address,
           txs: [commitTx],
           nonInteractive: true,
@@ -739,7 +745,7 @@ export function registerInitProfileCommand(program: Command): void {
               chainId: ctx.chainId,
               senderAddress: signer.address,
               calls: batchTxs.map(toBatchCall),
-              privateKey: signer.privateKey,
+              signer: signer.signerKey,
               ...eip7702Tor,
             });
             if (!ctx.nonInteractive) printFeePreview(fees);
@@ -752,8 +758,9 @@ export function registerInitProfileCommand(program: Command): void {
             return sendEip7702BatchUserOperation({
               client: ctx.client,
               chainId: ctx.chainId,
-              privateKey: signer.privateKey!,
+              signer: signer.signerKey!,
               calls: batchTxs.map(toBatchCall),
+              nonInteractive: ctx.nonInteractive,
               ...eip7702Tor,
             });
           }
@@ -830,7 +837,7 @@ export function registerInitProfileCommand(program: Command): void {
       const recordSigner = resolveNameSigner({
         requiredAddress: requiredAddressForRecords(ownership),
         walletDir: ctx.walletDir,
-        mnemonic: ctx.mnemonic,
+        mnemonic: mnemonic,
         password: ctx.password,
         indexFlag: opts.index,
         ownerPriv: ctx.ownerPriv,
@@ -960,7 +967,7 @@ export function registerInitProfileCommand(program: Command): void {
             chainId: ctx.chainId,
             senderAddress: recordSigner.address,
             calls: recordBatch.map(toBatchCall),
-            privateKey: recordSigner.privateKey,
+            signer: recordSigner.signerKey,
             rpcUrl: ctx.rpcUrl,
             walletDir: ctx.walletDir,
             withoutTor: ctx.withoutTor,
@@ -1028,14 +1035,14 @@ export function registerInitProfileCommand(program: Command): void {
         return;
       }
 
-      if (recordBatch.length > 0 && !recordSigner.privateKey) {
+      if (recordBatch.length > 0 && !recordSigner.signerKey) {
         throw new Error("Missing private key for record updates.");
       }
-      if (separateRegistry && !signer.privateKey) {
+      if (separateRegistry && !signer.signerKey) {
         throw new Error("Missing private key for ERC-6538 registerKeys.");
       }
 
-      if (recordBatch.length >= 2 && recordSigner.privateKey) {
+      if (recordBatch.length >= 2 && recordSigner.signerKey) {
         const eip7702Tor = {
           rpcUrl: ctx.rpcUrl,
           walletDir: ctx.walletDir,
@@ -1050,7 +1057,7 @@ export function registerInitProfileCommand(program: Command): void {
               chainId: ctx.chainId,
               senderAddress: recordSigner.address,
               calls: recordBatch.map(toBatchCall),
-              privateKey: recordSigner.privateKey,
+              signer: recordSigner.signerKey,
               ...eip7702Tor,
             });
             if (!ctx.nonInteractive) printFeePreview(fees);
@@ -1061,14 +1068,15 @@ export function registerInitProfileCommand(program: Command): void {
             return sendEip7702BatchUserOperation({
               client: ctx.client,
               chainId: ctx.chainId,
-              privateKey: recordSigner.privateKey!,
+              signer: recordSigner.signerKey!,
               calls: recordBatch.map(toBatchCall),
+              nonInteractive: ctx.nonInteractive,
               ...eip7702Tor,
             });
           }
         );
         hashes.push(sent.txHash);
-      } else if (recordBatch.length === 1 && recordSigner.privateKey) {
+      } else if (recordBatch.length === 1 && recordSigner.signerKey) {
         const only = recordBatch[0]!;
         const fees = await estimateEoaTxFeePreview(ctx.client, {
           to: only.to,
@@ -1084,7 +1092,7 @@ export function registerInitProfileCommand(program: Command): void {
         const [h] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
-          privateKey: recordSigner.privateKey,
+          signer: recordSigner.signerKey,
           from: recordSigner.address,
           txs: [only],
           nonInteractive: true,
@@ -1092,7 +1100,7 @@ export function registerInitProfileCommand(program: Command): void {
         hashes.push(h!);
       }
 
-      if (separateRegistry && signer.privateKey) {
+      if (separateRegistry && signer.signerKey) {
         const fees = await estimateEoaTxFeePreview(ctx.client, {
           to: separateRegistry.to,
           from: signer.address,
@@ -1107,7 +1115,7 @@ export function registerInitProfileCommand(program: Command): void {
         const [regHash] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
-          privateKey: signer.privateKey,
+          signer: signer.signerKey,
           from: signer.address,
           txs: [separateRegistry],
           nonInteractive: true,

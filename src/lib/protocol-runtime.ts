@@ -10,15 +10,27 @@ import {
   type SupportedProtocol,
 } from "../utils/plugins.js";
 import { acquireRailgunSession } from "./railgun-session.js";
+import {
+  asWalletKeys,
+  HardwareWalletUnsupportedError,
+  type WalletKeys,
+} from "../utils/wallet-keys.js";
 
 export type ProtocolRuntimeContext = {
   protocol: SupportedProtocol;
   rpcUrl: string;
   walletDir: string;
   password: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys (Ledger wallets support Tornado only). */
+  mnemonic: string | WalletKeys;
   chainId: bigint;
 };
+
+function seedOnly(keys: string | WalletKeys): string {
+  const k = asWalletKeys(keys);
+  if (k.kind !== "seed") throw new HardwareWalletUnsupportedError();
+  return k.mnemonic;
+}
 
 /**
  * Runs `fn` with a protocol host + plugin. Railgun reuses one session per wallet/chain;
@@ -34,7 +46,7 @@ export async function withProtocolRuntime<T>(
         rpcUrl: ctx.rpcUrl,
         walletDir: ctx.walletDir,
         password: ctx.password,
-        mnemonic: ctx.mnemonic,
+        mnemonic: seedOnly(ctx.mnemonic),
         chainId: ctx.chainId,
       });
       return fn(host, plugin);
@@ -63,7 +75,7 @@ export async function rpcForWalletOps(
   ctx: ProtocolRuntimeContext
 ): Promise<{ rpc: KohakuPublicClient; dispose: () => void }> {
   if (ctx.protocol === "railgun") {
-    const session = await acquireRailgunSession(ctx);
+    const session = await acquireRailgunSession({ ...ctx, mnemonic: seedOnly(ctx.mnemonic) });
     return { rpc: session.rpc, dispose: () => {} };
   }
   const rpc = await makePublicClient(ctx.rpcUrl);

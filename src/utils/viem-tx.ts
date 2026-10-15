@@ -6,6 +6,7 @@ import {
   type Address,
   type Chain,
   type Hex,
+  type LocalAccount,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -13,9 +14,18 @@ import type { KohakuPublicClient } from "./rpc.js";
 
 export type KohakuWalletClient = ReturnType<typeof createWalletClient>;
 
+/** A raw private key (seed wallets) or a signing account (hardware wallets). */
+export type SignerKey = string | LocalAccount;
+
 function normalizePrivateKey(priv: string): Hex {
   const hex = priv.startsWith("0x") ? priv : `0x${priv}`;
   return hex as Hex;
+}
+
+export function toLocalAccount(key: SignerKey): LocalAccount {
+  return typeof key === "string"
+    ? privateKeyToAccount(normalizePrivateKey(key))
+    : key;
 }
 
 export function addressFromPrivateKey(priv: string): Address {
@@ -23,11 +33,11 @@ export function addressFromPrivateKey(priv: string): Address {
 }
 
 export function makeWalletClient(
-  priv: string,
+  key: SignerKey,
   publicClient: KohakuPublicClient,
   rpcUrl: string
 ): KohakuWalletClient {
-  const account = privateKeyToAccount(normalizePrivateKey(priv));
+  const account = toLocalAccount(key);
   return createWalletClient({
     account,
     chain: publicClient.chain as Chain,

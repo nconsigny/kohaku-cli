@@ -3,6 +3,7 @@ import { loadStore, saveStore } from "./aes-storage";
 import { Mnemonic } from "derive-railgun-keys";
 import { getAddress } from "viem";
 import { addressFromPrivateKey } from "./viem-tx.js";
+import { asWalletKeys, ledgerAddressAt, type WalletKeys } from "./wallet-keys.js";
 
 function accountsStorePathForWallet(walletDir: string): string {
   return join(walletDir, "public-accounts.json");
@@ -59,9 +60,12 @@ export function publicAccountDerivationPath(index: number): string {
   return `m/44'/60'/0'/0/${index}`;
 }
 
-function derivePublicAccountAtIndex(mnemonic: string, index: number): PublicAccount {
-  const priv = Mnemonic.to0xPrivateKeyByIndex(mnemonic, index);
-  const address = addressFromPrivateKey(priv);
+/** Hardware wallets store no private key: `priv` stays empty and the device signs. */
+function derivePublicAccountAtIndex(keys: WalletKeys, index: number): PublicAccount {
+  const priv =
+    keys.kind === "seed" ? Mnemonic.to0xPrivateKeyByIndex(keys.mnemonic, index) : "";
+  const address =
+    keys.kind === "seed" ? addressFromPrivateKey(priv) : ledgerAddressAt(keys, index);
   return {
     address,
     index,
@@ -74,7 +78,12 @@ function derivePublicAccountAtIndex(mnemonic: string, index: number): PublicAcco
   };
 }
 
-export function makePublicAccountsStorage(walletDir: string, mnemonic: string, password: string): PublicAccountsStorage {
+export function makePublicAccountsStorage(
+  walletDir: string,
+  walletKeys: string | WalletKeys,
+  password: string
+): PublicAccountsStorage {
+  const keys = asWalletKeys(walletKeys);
   const storePath = accountsStorePathForWallet(walletDir);
   const { store: initial, salt } = loadStore(storePath, password);
   const store: PublicAccountsStore = initial != "{}" ? JSON.parse(initial) : {
@@ -104,7 +113,7 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
       const created: PublicAccount[] = [];
       for (let k = 0; k < n; k += 1) {
         const index = store.nextIndex++;
-        const acct = derivePublicAccountAtIndex(mnemonic, index);
+        const acct = derivePublicAccountAtIndex(keys, index);
         store.accounts[index] = acct;
         created.push(acct);
       }
@@ -117,7 +126,7 @@ export function makePublicAccountsStorage(walletDir: string, mnemonic: string, p
       }
       const created: PublicAccount[] = [];
       for (let k = 0; k < n; k += 1) {
-        created.push(derivePublicAccountAtIndex(mnemonic, store.nextIndex + k));
+        created.push(derivePublicAccountAtIndex(keys, store.nextIndex + k));
       }
       return created;
     },

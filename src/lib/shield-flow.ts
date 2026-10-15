@@ -1,6 +1,5 @@
 import type { AssetAmount } from "@kohaku-eth/plugins";
 import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem";
-import { Mnemonic } from "derive-railgun-keys";
 
 import { makePublicClient, disposePublicClient, type KohakuPublicClient } from "../utils/rpc";
 import { withTor } from "../utils/tor";
@@ -25,12 +24,18 @@ import {
   parseStealthIndex,
 } from "./stealth/storage.js";
 import {
-  addressFromPrivateKey,
   encodeContractCall,
   makeWalletClient,
   simulateCallOrThrow,
   sendTransactionAndWait,
+  type SignerKey,
 } from "../utils/viem-tx.js";
+import {
+  asWalletKeys,
+  publicAddressAt,
+  signerFor,
+  type WalletKeys,
+} from "../utils/wallet-keys.js";
 
 export type PublicAccountWithBalance = {
   /** HD public-account index, or `-1` when this row is a stealth account. */
@@ -125,7 +130,7 @@ export function fromValueNeedsNameResolution(fromValue: string): boolean {
 export function publicAccountsWithBalanceFromSnapshot(
   snap: BalancesSnapshot,
   walletDir: string,
-  mnemonic: string,
+  mnemonic: string | WalletKeys,
   password: string,
   tokenMeta: ResolvedTokenMeta
 ): PublicAccountWithBalance[] {
@@ -178,7 +183,7 @@ export function publicAccountsWithBalanceFromSnapshot(
 export async function listPublicAccountsWithBalance(
   rpcUrl: string,
   walletDir: string,
-  mnemonic: string,
+  mnemonic: string | WalletKeys,
   password: string,
   tokenMeta: ResolvedTokenMeta
 ): Promise<PublicAccountWithBalance[]> {
@@ -410,14 +415,16 @@ export async function simulateTransactionOrThrow(
 export function resolveShieldSender(opts: {
   fromValue: string;
   walletDir: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys when it may be a hardware wallet. */
+  mnemonic: string | WalletKeys;
   password: string;
   dryRun: boolean;
   allowDeriveFromMnemonic: boolean;
-}): { senderAddress: string; senderPrivateKey: string | undefined } {
+}): { senderAddress: string; senderKey: SignerKey | undefined } {
+  const keys = asWalletKeys(opts.mnemonic);
   const publicStorage = makePublicAccountsStorage(
     opts.walletDir,
-    opts.mnemonic,
+    keys,
     opts.password
   );
   const stealthStorage = makeStealthAccountsStorage(
@@ -433,18 +440,24 @@ export function resolveShieldSender(opts: {
         `Stealth account s${stealthIdx} not found. Run balances (or init-profile) to scan announcements.`
       );
     }
-    return { senderAddress: account.address, senderPrivateKey: account.priv };
+    return { senderAddress: account.address, senderKey: account.priv };
   }
 
   const fromIndex = parseFromIndex(opts.fromValue);
   if (fromIndex !== null) {
     const account = publicStorage.getAccount(fromIndex);
     if (account) {
-      return { senderAddress: account.address, senderPrivateKey: account.priv };
+      return {
+        senderAddress: account.address,
+        senderKey: signerFor(keys, fromIndex, account.address, account.priv),
+      };
     }
     if (opts.allowDeriveFromMnemonic || opts.dryRun) {
-      const priv = Mnemonic.to0xPrivateKeyByIndex(opts.mnemonic, fromIndex);
-      return { senderAddress: addressFromPrivateKey(priv), senderPrivateKey: priv };
+      const senderAddress = publicAddressAt(keys, fromIndex);
+      return {
+        senderAddress,
+        senderKey: signerFor(keys, fromIndex, senderAddress, ""),
+      };
     }
     throw new Error(
       `Public account index ${fromIndex} not found. Derive from mnemonic is not enabled.`
@@ -456,17 +469,20 @@ export function resolveShieldSender(opts: {
       .getAccounts()
       .find((x) => x.address.toLowerCase() === senderAddress.toLowerCase());
     if (match) {
-      return { senderAddress, senderPrivateKey: match.priv };
+      return {
+        senderAddress,
+        senderKey: signerFor(keys, match.index, match.address, match.priv),
+      };
     }
     const stealthMatch = stealthStorage.findByAddress(senderAddress);
     if (stealthMatch) {
       return {
         senderAddress: getAddress(stealthMatch.address),
-        senderPrivateKey: stealthMatch.priv,
+        senderKey: stealthMatch.priv,
       };
     }
     if (opts.dryRun) {
-      return { senderAddress, senderPrivateKey: undefined };
+      return { senderAddress, senderKey: undefined };
     }
     throw new Error(
       `Address ${senderAddress} is not in this wallet's public or stealth accounts.`
@@ -506,7 +522,7 @@ export async function prepareShieldPlan(opts: {
     onSyncProgress,
   } = opts;
 
-  const { senderAddress, senderPrivateKey: _pk } = resolveShieldSender({
+  const { senderAddress, senderKey: _pk } = resolveShieldSender({
     fromValue,
     walletDir,
     mnemonic,
@@ -642,7 +658,7 @@ export async function broadcastShield(opts: {
     dryRun: false,
     allowDeriveFromMnemonic: opts.allowDeriveFromMnemonic ?? true,
   });
-  if (!sender.senderPrivateKey) {
+  if (!sender.senderKey) {
     throw new Error(
       "Cannot sign: no private key for this sender (use a saved public account)."
     );
@@ -680,9 +696,11 @@ export async function broadcastShield(opts: {
       );
       const sent = await sendEip7702BatchUserOperation({
         client: rpc,
-        privateKey: sender.senderPrivateKey,
+        signer: sender.senderKey,
         chainId: opts.chainId,
         calls,
+        // Library entry point: never prompts; the delegation notice goes to stderr.
+        nonInteractive: true,
         rpcUrl: opts.rpcUrl,
         walletDir: opts.walletDir,
         withoutTor: opts.withoutTor,
@@ -698,7 +716,7 @@ export async function broadcastShield(opts: {
 
     const tx = calls[0]!;
     const walletClient = makeWalletClient(
-      sender.senderPrivateKey,
+      sender.senderKey,
       rpc,
       opts.rpcUrl
     );

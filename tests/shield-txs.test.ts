@@ -99,7 +99,7 @@ describe("resolveShieldSender stealth --from", () => {
       for (const fromValue of ["s0", "S0", "stealth:0"]) {
         const resolved = resolveShieldSender(senderOpts(walletDir, fromValue));
         assert.equal(resolved.senderAddress, getAddress(STEALTH_ADDRESS));
-        assert.equal(resolved.senderPrivateKey, STEALTH_PRIV);
+        assert.equal(resolved.senderKey, STEALTH_PRIV);
       }
     });
   });
@@ -122,7 +122,7 @@ describe("resolveShieldSender stealth --from", () => {
           senderOpts(walletDir, fromValue, false)
         );
         assert.equal(resolved.senderAddress, getAddress(STEALTH_ADDRESS));
-        assert.equal(resolved.senderPrivateKey, STEALTH_PRIV);
+        assert.equal(resolved.senderKey, STEALTH_PRIV);
       }
     });
   });
@@ -146,7 +146,7 @@ describe("resolveShieldSender stealth --from", () => {
           "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         )
       );
-      assert.ok(resolved.senderPrivateKey);
+      assert.ok(resolved.senderKey);
     });
   });
 });

@@ -11,6 +11,7 @@ import {
 } from "../utils/cli-command-options";
 import { cliError, cliErrorFromCaught } from "../utils/cli-errors";
 import {
+  createHardwareWalletOnDisk,
   createWalletOnDisk,
   generateMnemonic,
   interpretImportStealthStartBlockFlag,
@@ -26,6 +27,11 @@ import {
 } from "../utils/wallets-util";
 import { normalizeValidatedMnemonic } from "../utils/mnemonic";
 import { readSecretFile } from "../utils/secret-file";
+import {
+  ledgerAddressAt,
+  readLedgerKeys,
+  type LedgerKeys,
+} from "../utils/wallet-keys.js";
 
 type CreateWalletOpts = {
   import?: boolean;
@@ -38,6 +44,7 @@ type CreateWalletOpts = {
   testnet?: boolean;
   longSeed?: boolean;
   stealthStartBlock?: string | true;
+  ledger?: boolean;
   dataDir?: string;
 };
 
@@ -97,11 +104,97 @@ async function promptPasswordEncryptWallet(): Promise<string> {
   }
 }
 
+/** Encryption password from flags or prompt; null after printing an error. */
+async function resolveCreatePassword(opts: CreateWalletOpts): Promise<string | null> {
+  if (!shouldResolveCreatePasswordFromFlags(opts)) {
+    return promptPasswordEncryptWallet();
+  }
+  let resolved: string | null;
+  try {
+    resolved = resolvePasswordInputPreferFile(
+      opts.nonInteractive ? opts.password : undefined,
+      opts.passwordFile
+    );
+  } catch (e) {
+    cliErrorFromCaught(e);
+    return null;
+  }
+  if (!resolved) {
+    cliError(
+      "--password or --password-file is required when using --non-interactive."
+    );
+    return null;
+  }
+  return resolved;
+}
+
+/** `create-wallet --ledger`: the seed stays on the device; only the account xpub is stored. */
+async function createLedgerWallet(
+  name: string,
+  dataDir: string,
+  opts: CreateWalletOpts
+): Promise<void> {
+  if (
+    opts.longSeed ||
+    opts.mnemonic !== undefined ||
+    opts.mnemonicFile !== undefined ||
+    opts.stealthStartBlock !== undefined
+  ) {
+    cliError(
+      "--ledger cannot be combined with --long-seed, --mnemonic, --mnemonic-file or --stealth-start-block."
+    );
+    return;
+  }
+
+  let keys: LedgerKeys;
+  try {
+    keys = await readLedgerKeys();
+  } catch (e) {
+    cliErrorFromCaught(e);
+    return;
+  }
+  if (!opts.nonInteractive) {
+    log.info(`Ledger connected. First account: ${ledgerAddressAt(keys, 0)}`);
+  }
+
+  const encryptPassword = await resolveCreatePassword(opts);
+  if (encryptPassword === null) return;
+
+  try {
+    const created = await createHardwareWalletOnDisk({
+      dataDir,
+      walletName: name,
+      keys,
+      password: encryptPassword,
+      testnet: !!opts.testnet,
+      importMode: !!opts.import,
+      rpcUrl: opts.import ? resolveRpcUrl(opts.rpcUrl) : undefined,
+    });
+    if (!opts.nonInteractive && opts.import) {
+      log.info(`Found ${created.importedAccounts} used public account(s).`);
+    }
+  } catch (e) {
+    cliErrorFromCaught(e);
+    return;
+  }
+
+  const done = `✔ Ledger wallet "${name}" created and saved.`;
+  if (!opts.nonInteractive) {
+    outro(chalk.green(done));
+    return;
+  }
+  console.log(chalk.green(done));
+}
+
 export function registerCreateWalletCommand(program: Command): void {
   program
     .command("create-wallet <name>")
     .description("Create a kohaku-cli wallet (BIP-39 seed ecrypted on disk)")
-    .option("--import", "Paste an existing mnemonic instead of generating one")
+    .option("--import", "Paste an existing mnemonic instead of generating one (with --ledger: scan for used accounts)")
+    .option(
+      "--ledger",
+      "Use a Ledger (Ethereum app open): the seed stays on the device, only public keys are stored"
+    )
     .option(
       "--non-interactive",
       "Agent mode: no prompts (requires --password/--password-file and other documented flags)"
@@ -152,6 +245,11 @@ export function registerCreateWalletCommand(program: Command): void {
         return;
       }
 
+      if (opts.ledger) {
+        await createLedgerWallet(name, dataDir, opts);
+        return;
+      }
+
       let mnemonicPhrase: string;
       let importRpcUrl: string | undefined;
       if (opts.import) {
@@ -196,28 +294,8 @@ export function registerCreateWalletCommand(program: Command): void {
         }
       }
 
-      let encryptPassword: string;
-      if (shouldResolveCreatePasswordFromFlags(opts)) {
-        let resolved: string | null;
-        try {
-          resolved = resolvePasswordInputPreferFile(
-            opts.nonInteractive ? opts.password : undefined,
-            opts.passwordFile
-          );
-        } catch (e) {
-          cliErrorFromCaught(e);
-          return;
-        }
-        if (!resolved) {
-          cliError(
-            "--password or --password-file is required when using --non-interactive."
-          );
-          return;
-        }
-        encryptPassword = resolved;
-      } else {
-        encryptPassword = await promptPasswordEncryptWallet();
-      }
+      const encryptPassword = await resolveCreatePassword(opts);
+      if (encryptPassword === null) return;
 
       if (opts.stealthStartBlock !== undefined && !opts.import) {
         cliError(

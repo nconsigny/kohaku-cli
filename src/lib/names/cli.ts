@@ -5,7 +5,8 @@ import {
   passwordFileOption,
 } from "../../utils/cli-command-options.js";
 import { cliError, cliErrorFromCaught } from "../../utils/cli-errors.js";
-import { readSeedKeystore } from "../../utils/mnemonic.js";
+import { readWalletKeys } from "../../utils/mnemonic.js";
+import type { WalletKeys } from "../../utils/wallet-keys.js";
 import {
   DEFAULT_DATA_DIR,
   disposePublicClient,
@@ -25,7 +26,7 @@ export type NameCommandContext = {
   walletName: string;
   walletDir: string;
   password: string;
-  mnemonic: string;
+  walletKeys: WalletKeys;
   rpcUrl: string;
   chainId: bigint;
   client: KohakuPublicClient;
@@ -81,14 +82,14 @@ export async function withNameCommandContext(
     flagPasswordFile: opts.passwordFile,
     nonInteractive: opts.nonInteractive,
     validate: (candidate) => {
-      readSeedKeystore(candidate, walletDir);
+      readWalletKeys(candidate, walletDir);
     },
   });
   if (!password) return;
 
-  let mnemonic: string;
+  let walletKeys: WalletKeys;
   try {
-    mnemonic = readSeedKeystore(password, walletDir);
+    walletKeys = readWalletKeys(password, walletDir);
   } catch (e) {
     cliErrorFromCaught(e);
     return;
@@ -110,7 +111,7 @@ export async function withNameCommandContext(
         walletName,
         walletDir,
         password,
-        mnemonic,
+        walletKeys,
         rpcUrl,
         chainId,
         client,

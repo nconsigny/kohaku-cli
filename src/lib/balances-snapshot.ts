@@ -34,6 +34,7 @@ import {
   scanAndImportStealthAnnouncements,
 } from "./stealth/scan.js";
 import { makeStealthAccountsStorage } from "./stealth/storage.js";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 import {
   attachUsdValuesToRowsLists,
   USD_VALUE_UNAVAILABLE,
@@ -142,7 +143,7 @@ async function loadPrivateProtocolData(
   rpcUrl: string,
   walletDir: string,
   password: string,
-  mnemonic: string,
+  mnemonic: string | WalletKeys,
   chainId: bigint,
   includeNotes: boolean,
   onSyncProgress?: (message: string) => void
@@ -213,7 +214,8 @@ export type LoadBalancesSnapshotOptions = {
   rpcUrl: string;
   walletDir: string;
   password: string;
-  mnemonic: string;
+  /** Hardware wallets: public balances and Tornado only (other protocols and stealth need the seed). */
+  walletKeys: WalletKeys;
   chainId: bigint;
   extraTokenAddresses?: `0x${string}`[];
   /** When set, only these private protocols are synced. Omit for all. */
@@ -274,13 +276,12 @@ async function resolvePrivateBalanceItems(
     | "rpcUrl"
     | "walletDir"
     | "password"
-    | "mnemonic"
     | "chainId"
     | "includeProtocols"
     | "verbose"
     | "onWarning"
     | "onSyncProgress"
-  >
+  > & { mnemonic: string | WalletKeys }
 ): Promise<ResolvedPrivateBalances> {
   const {
     rpcUrl,
@@ -401,14 +402,13 @@ export async function loadPrivateBalancesOnly(
     | "rpcUrl"
     | "walletDir"
     | "password"
-    | "mnemonic"
     | "chainId"
     | "includeProtocols"
     | "onWarning"
     | "withoutTor"
     | "onTorStatus"
     | "onSyncProgress"
-  >
+  > & { mnemonic: string }
 ): Promise<PrivateBalancesSnapshot> {
   const includeProtocols = opts.includeProtocols ?? null;
   const useTor =
@@ -445,20 +445,24 @@ async function loadBalancesSnapshotInner(
     rpcUrl,
     walletDir,
     password,
-    mnemonic,
+    walletKeys,
     chainId,
     extraTokenAddresses = [],
-    includeProtocols = null,
     verbose = false,
     onWarning,
     withoutTor,
     onTorStatus,
     onSyncProgress,
-    skipStealthScan,
     stealthStartBlockBackdate,
     onStealthScanStart,
   } = opts;
   const chainIdString = chainId.toString();
+  const mnemonic = walletKeys.kind === "seed" ? walletKeys.mnemonic : null;
+  const includeProtocols =
+    mnemonic !== null
+      ? (opts.includeProtocols ?? null)
+      : (opts.includeProtocols ?? ["tornado"]).filter((p) => p === "tornado");
+  const skipStealthScan = mnemonic === null || opts.skipStealthScan;
 
   const useTor = !withoutTor && willSyncPrivateProtocols(includeProtocols);
 
@@ -478,7 +482,7 @@ async function loadBalancesSnapshotInner(
         rpcUrl,
         walletDir,
         password,
-        mnemonic,
+        mnemonic: walletKeys,
         chainId,
         includeProtocols,
         verbose,
@@ -493,7 +497,7 @@ async function loadBalancesSnapshotInner(
       ...erc20FromPrivate,
     ]);
 
-  const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+  const publicStorage = makePublicAccountsStorage(walletDir, walletKeys, password);
   const publicAccounts = publicStorage.getAccounts();
   const publicAccountIndexByAddress: Record<string, number> = {};
   for (const acct of publicAccounts) {
@@ -507,7 +511,7 @@ async function loadBalancesSnapshotInner(
   > = [];
     try {
     // Discover new stealth payments before aggregating public balances.
-    if (!skipStealthScan) {
+    if (!skipStealthScan && mnemonic !== null) {
       try {
         const keypair = deriveStealthKeypair(mnemonic, chainId);
         const stealthStore = makeStealthAccountsStorage(

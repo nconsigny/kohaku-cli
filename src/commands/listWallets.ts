@@ -4,6 +4,7 @@ import { Option, type Command } from "commander";
 
 import { cliOptions } from "../utils/cli-command-options";
 import { DEFAULT_DATA_DIR } from "../utils/rpc";
+import { isHardwareWallet } from "../utils/wallet-keys.js";
 import {
   listWalletDirNames,
   walletNetworkKind,
@@ -106,7 +107,8 @@ export function registerListWalletsCommand(program: Command): void {
         const kind = walletNetworkKind(join(dataDir, name));
         const typeLabel =
           kind === "unknown" ? "unknown" : kind === "mainnet" ? "mainnet" : "testnet";
-        console.log(` - ${name} (${typeLabel})`);
+        const signer = isHardwareWallet(join(dataDir, name)) ? ", ledger" : "";
+        console.log(` - ${name} (${typeLabel}${signer})`);
       }
     });
 }

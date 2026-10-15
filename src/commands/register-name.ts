@@ -74,7 +74,7 @@ export function registerRegisterNameCommand(program: Command): void {
       const parsed = parseRegisterName(opts.name!, protocol);
       const signer = resolveRegisterSigner({
         walletDir: ctx.walletDir,
-        mnemonic: ctx.mnemonic,
+        mnemonic: ctx.walletKeys,
         password: ctx.password,
         indexFlag: opts.index,
         ownerPriv: ctx.ownerPriv,
@@ -158,7 +158,7 @@ export function registerRegisterNameCommand(program: Command): void {
         return;
       }
 
-      if (!signer.privateKey) {
+      if (!signer.signerKey) {
         throw new Error("Missing private key for broadcast. Pass --owner-priv if needed.");
       }
 
@@ -170,7 +170,7 @@ export function registerRegisterNameCommand(program: Command): void {
       const [commitHash] = await broadcastPreparedTxs({
         client: ctx.client,
         rpcUrl: ctx.rpcUrl,
-        privateKey: signer.privateKey,
+        signer: signer.signerKey,
         from: signer.address,
         txs: [commitTx],
         nonInteractive: true, // already confirmed above
@@ -194,7 +194,7 @@ export function registerRegisterNameCommand(program: Command): void {
       const [finishHash] = await broadcastPreparedTxs({
         client: ctx.client,
         rpcUrl: ctx.rpcUrl,
-        privateKey: signer.privateKey,
+        signer: signer.signerKey,
         from: signer.address,
         txs: [finishTx],
         nonInteractive: true,
@@ -212,7 +212,7 @@ export function registerRegisterNameCommand(program: Command): void {
         [reverseHash] = await broadcastPreparedTxs({
           client: ctx.client,
           rpcUrl: ctx.rpcUrl,
-          privateKey: signer.privateKey,
+          signer: signer.signerKey,
           from: signer.address,
           txs: [reverseTx],
           nonInteractive: true,

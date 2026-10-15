@@ -6,6 +6,7 @@ import { password, select } from "@inquirer/prompts";
 import { cliError } from "./cli-errors";
 import { SEED_FILENAME } from "./mnemonic";
 import { readSecretFile } from "./secret-file";
+import { HardwareWalletUnsupportedError, isHardwareWallet } from "./wallet-keys.js";
 
 // --- Paths: CLI wallet name → filesystem ---
 
@@ -178,6 +179,8 @@ export async function resolveWalletPassword(opts: {
         await opts.validate(trimmed);
         return trimmed;
       } catch (e) {
+        // Retrying cannot help: the command does not support this wallet.
+        if (e instanceof HardwareWalletUnsupportedError) throw e;
         log.warn(e instanceof Error ? e.message : "Invalid wallet password.");
         continue;
       }
@@ -241,7 +244,11 @@ export function listWalletDirNames(dataDir: string): string[] {
   return entries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    .filter((name) => existsSync(join(dataDir, name, SEED_FILENAME)))
+    .filter(
+      (name) =>
+        existsSync(join(dataDir, name, SEED_FILENAME)) ||
+        isHardwareWallet(join(dataDir, name))
+    )
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 

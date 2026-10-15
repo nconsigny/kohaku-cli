@@ -30,7 +30,8 @@ import {
   quietNonInteractive,
   runQuietSpinner,
 } from "../utils/cli-quiet";
-import { readSeedKeystore } from "../utils/mnemonic";
+import { readWalletKeys } from "../utils/mnemonic";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 import {
   findPublicAccountByAddress,
   makePublicAccountsStorage,
@@ -270,16 +271,24 @@ export function registerUnshieldCommand(program: Command): void {
         flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
-          readSeedKeystore(candidate, walletDir);
+          readWalletKeys(candidate, walletDir);
         },
       });
       if (!password) return;
 
-      let mnemonic: string;
+      let walletKeys: WalletKeys;
       try {
-        mnemonic = readSeedKeystore(password, walletDir);
+        walletKeys = readWalletKeys(password, walletDir);
       } catch (e) {
         cliErrorFromCaught(e);
+        return;
+      }
+      if (walletKeys.kind !== "seed" && protocol !== "tornado") {
+        cliError("Ledger wallets support Tornado only for now (Railgun and Privacy Pools need the seed).");
+        return;
+      }
+      if (walletKeys.kind !== "seed" && tailCalls.length > 0) {
+        cliError("--tail-calls are not supported for Ledger wallets yet (they need the device to sign the landing account).");
         return;
       }
 
@@ -329,7 +338,7 @@ export function registerUnshieldCommand(program: Command): void {
         }
       }
 
-      const publicStorage = makePublicAccountsStorage(walletDir, mnemonic, password);
+      const publicStorage = makePublicAccountsStorage(walletDir, walletKeys, password);
       const stealthStorage = makeStealthAccountsStorage(walletDir, password);
       let persistFreshAccountAfterBroadcast = false;
 
@@ -515,7 +524,7 @@ export function registerUnshieldCommand(program: Command): void {
           rpc: rpcForHost,
           walletDir,
           password,
-          mnemonic,
+          mnemonic: walletKeys,
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
@@ -699,6 +708,12 @@ export function registerUnshieldCommand(program: Command): void {
           protocol === "tornado"
             ? await countTornadoWithdrawals(plugin, asset, amountWei)
             : undefined;
+        if (walletKeys.kind !== "seed" && tornadoWithdrawalCount! > 1) {
+          cliError(
+            `This amount spends ${tornadoWithdrawalCount} notes. Ledger wallets unshield one Tornado note at a time for now: pick an amount equal to a single note.`
+          );
+          return;
+        }
         if (protocol === "tornado") {
           try {
             tornadoDelegationConfig({

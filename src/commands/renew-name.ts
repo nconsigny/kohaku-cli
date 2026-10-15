@@ -96,7 +96,7 @@ export function registerRenewNameCommand(program: Command): void {
       const payer = resolveRenewPayer({
         ownerAddress: ownership.owner,
         walletDir: ctx.walletDir,
-        mnemonic: ctx.mnemonic,
+        mnemonic: ctx.walletKeys,
         password: ctx.password,
         indexFlag: opts.index,
         ownerPriv: ctx.ownerPriv,
@@ -149,14 +149,14 @@ export function registerRenewNameCommand(program: Command): void {
         return;
       }
 
-      if (!payer.privateKey) {
+      if (!payer.signerKey) {
         throw new Error("Missing private key for broadcast. Pass --owner-priv if needed.");
       }
 
       const [hash] = await broadcastPreparedTxs({
         client: ctx.client,
         rpcUrl: ctx.rpcUrl,
-        privateKey: payer.privateKey,
+        signer: payer.signerKey,
         from: payer.address,
         txs: [tx],
         nonInteractive: ctx.nonInteractive,

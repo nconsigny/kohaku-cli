@@ -1,14 +1,20 @@
 import { getAddress, isAddress, type Address, type Hex } from "viem";
-import { Mnemonic } from "derive-railgun-keys";
 
 import { parseFromIndex } from "../shield-flow.js";
 import { makePublicAccountsStorage } from "../../utils/public-accounts.js";
-import { addressFromPrivateKey } from "../../utils/viem-tx.js";
+import type { SignerKey } from "../../utils/viem-tx.js";
+import {
+  asWalletKeys,
+  publicAddressAt,
+  signerFor,
+  type WalletKeys,
+} from "../../utils/wallet-keys.js";
 import type { NameOwnership } from "./types.js";
 
 export type ResolvedSigner = {
   address: Address;
-  privateKey: string | undefined;
+  /** Undefined on dry runs that only need the address. */
+  signerKey: SignerKey | undefined;
   index: number | null;
 };
 
@@ -23,18 +29,16 @@ export type ResolvedSigner = {
 export function resolveNameSigner(opts: {
   requiredAddress: Address;
   walletDir: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys when it may be a hardware wallet. */
+  mnemonic: string | WalletKeys;
   password: string;
   indexFlag?: string;
   ownerPriv: boolean;
   dryRun: boolean;
 }): ResolvedSigner {
   const required = getAddress(opts.requiredAddress);
-  const storage = makePublicAccountsStorage(
-    opts.walletDir,
-    opts.mnemonic,
-    opts.password
-  );
+  const keys = asWalletKeys(opts.mnemonic);
+  const storage = makePublicAccountsStorage(opts.walletDir, keys, opts.password);
   const accounts = storage.getAccounts();
   const byAddr = accounts.find(
     (a) => a.address.toLowerCase() === required.toLowerCase()
@@ -42,7 +46,7 @@ export function resolveNameSigner(opts: {
   if (byAddr) {
     return {
       address: getAddress(byAddr.address),
-      privateKey: byAddr.priv,
+      signerKey: signerFor(keys, byAddr.index, byAddr.address, byAddr.priv),
       index: byAddr.index,
     };
   }
@@ -60,11 +64,14 @@ export function resolveNameSigner(opts: {
           `--index ${idx} is ${addr} but name requires ${required}.`
         );
       }
-      return { address: addr, privateKey: persisted.priv, index: idx };
+      return {
+        address: addr,
+        signerKey: signerFor(keys, idx, addr, persisted.priv),
+        index: idx,
+      };
     }
     if (opts.ownerPriv || opts.dryRun) {
-      const priv = Mnemonic.to0xPrivateKeyByIndex(opts.mnemonic, idx);
-      const addr = addressFromPrivateKey(priv);
+      const addr = publicAddressAt(keys, idx);
       if (addr.toLowerCase() !== required.toLowerCase()) {
         throw new Error(
           `--index ${idx} derives ${addr} but name requires ${required}.`
@@ -72,7 +79,8 @@ export function resolveNameSigner(opts: {
       }
       return {
         address: addr,
-        privateKey: opts.dryRun && !opts.ownerPriv ? undefined : priv,
+        signerKey:
+          opts.dryRun && !opts.ownerPriv ? undefined : signerFor(keys, idx, addr, ""),
         index: idx,
       };
     }
@@ -93,7 +101,8 @@ export function resolveNameSigner(opts: {
  */
 export function resolveRegisterSigner(opts: {
   walletDir: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys when it may be a hardware wallet. */
+  mnemonic: string | WalletKeys;
   password: string;
   indexFlag?: string;
   ownerPriv: boolean;
@@ -104,24 +113,22 @@ export function resolveRegisterSigner(opts: {
   if (idx === null) {
     throw new Error("--index must be a non-negative integer.");
   }
-  const storage = makePublicAccountsStorage(
-    opts.walletDir,
-    opts.mnemonic,
-    opts.password
-  );
+  const keys = asWalletKeys(opts.mnemonic);
+  const storage = makePublicAccountsStorage(opts.walletDir, keys, opts.password);
   const persisted = storage.getAccount(idx);
   if (persisted) {
     return {
       address: getAddress(persisted.address),
-      privateKey: persisted.priv,
+      signerKey: signerFor(keys, idx, persisted.address, persisted.priv),
       index: idx,
     };
   }
   if (opts.ownerPriv || opts.dryRun) {
-    const priv = Mnemonic.to0xPrivateKeyByIndex(opts.mnemonic, idx);
+    const address = publicAddressAt(keys, idx);
     return {
-      address: addressFromPrivateKey(priv),
-      privateKey: opts.dryRun && !opts.ownerPriv ? undefined : priv,
+      address,
+      signerKey:
+        opts.dryRun && !opts.ownerPriv ? undefined : signerFor(keys, idx, address, ""),
       index: idx,
     };
   }
@@ -137,7 +144,8 @@ export function resolveRegisterSigner(opts: {
 export function resolveRenewPayer(opts: {
   ownerAddress: Address;
   walletDir: string;
-  mnemonic: string;
+  /** Mnemonic, or the wallet's keys when it may be a hardware wallet. */
+  mnemonic: string | WalletKeys;
   password: string;
   indexFlag?: string;
   ownerPriv: boolean;

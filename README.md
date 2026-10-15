@@ -144,6 +144,43 @@ You should see the Tornado private balance decrease and the fresh public account
 
 ---
 
+## Ledger
+
+Your seed never leaves the Ledger. The CLI sends each transaction to the device, and you approve it there. Plug the Ledger in, unlock it and open the Ethereum app, then:
+
+```bash
+kohaku create-wallet myLedger --testnet --ledger
+kohaku next-fresh-address --wallet myLedger --verify   # also shows the address on the device
+```
+
+Only public keys are stored on disk, encrypted with the wallet password. USB is supported on Linux (hidraw; the device needs Ledger's udev rules).
+
+For everyday use, the regular Ethereum app from Ledger Live is all you need. That covers sending ETH and tokens, Tornado deposits and withdrawals, names, and single contract calls.
+
+There's one exception. Some actions bundle several steps into one transaction:
+
+- a token shield (approve + deposit)
+- a stealth transfer (send + announce)
+- several contract calls at once (`transact-raw` with 2+ calls)
+
+For those, your account has to become a "smart account", once. That takes one special signature, called an EIP-7702 delegation. The official Ledger app only accepts a different copy of the contract we use. So for that one signature you need our version of the app, **Kohaku ETH**. It's the same Ethereum app with one extra address on its allowed list. Afterwards you can go back to the official app.
+
+You don't need to plan for this. The CLI tells you when it's needed, before anything shows up on your Ledger.
+
+**Installing Kohaku ETH (once)**
+
+1. Quit the Ethereum app on your Ledger.
+2. In Chrome or Edge, go to https://zknox.netlify.app/sideloader.html and install "Kohaku ETH". The page walks you through the one-time setup. It installs next to the official app and replaces nothing.
+3. Open Kohaku ETH. In its settings, turn on "Smart accounts" and "Blind signing".
+4. Back in the CLI, confirm that Kohaku ETH is open. The CLI shows which account becomes a smart account, the contract and the chain, and asks you to confirm (the default is no).
+5. Approve on the Ledger, which shows the contract as "Simple7702Account".
+
+Both apps use the same seed and the same addresses.
+
+**Tornado notes on a Ledger.** The first time a run needs Tornado, the Ledger asks you to sign the message "Kohaku: unlock Tornado Cash notes (v1)…". The CLI derives your notes from that signature. The signature leaves the device: its only purpose is making the notes recoverable from your seed, and anyone holding it can spend them. Sign it only in kohaku-cli.
+
+---
+
 ## Commands list
 
 Global behavior:
@@ -178,6 +215,7 @@ Create a BIP-39 seed wallet encrypted on disk. The `<name>` argument is a single
 | `--testnet` | Tag wallet for Sepolia instead of mainnet. |
 | `--import` | Restore from mnemonic instead of generating a new one. |
 | `--long-seed` | Generate a 24-word (256-bit) mnemonic instead of the default 12-word (128-bit). Ignored with `--import`. |
+| `--ledger` | Use a Ledger (Ethereum app open). The seed stays on the device; only public keys are stored. With `--import`, scans for used accounts. See [Ledger](#ledger). |
 | `--rpc-url <url>` | Required with `--import` (or `RPC_URL`) to scan used addresses. Optional for new wallets when writing `.stealth-start-block`. |
 | `--stealth-start-block [block]` | With `--import`: write `.stealth-start-block`. Omit the flag to record the current tip (same as a new wallet). Bare flag: Kohaku floor (mainnet `25700000`, Sepolia `11455454`). With a number: that block, rounded up to the ERC-5564 announcer deploy if lower. |
 | `--mnemonic <phrase>` | Mnemonic (required with `--non-interactive --import`). |
@@ -226,6 +264,7 @@ Derive the next HD public account and print its address. By default the account 
 | `--wallet <name>` | Wallet (prompt if omitted). |
 | `--password <password>` | Unlock password. |
 | `--peek` | Print the next fresh address without persisting it (e.g. to craft `--tail-calls` before `unshield --next`). |
+| `--verify` | Ledger wallets: also show the address on the device and check it matches. |
 | `--non-interactive` | Requires `--wallet` and `--password`; prints address only. |
 | `--dataDir <path>` | Data root. |
 

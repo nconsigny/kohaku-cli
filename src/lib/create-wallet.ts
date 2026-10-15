@@ -14,6 +14,13 @@ import {
 } from "../utils/rpc.js";
 import { makePublicAccountsStorage } from "../utils/public-accounts.js";
 import {
+  asWalletKeys,
+  publicAddressAt,
+  writeHardwareWallet,
+  type LedgerKeys,
+  type WalletKeys,
+} from "../utils/wallet-keys.js";
+import {
   resolveWalletDir,
   writeWalletType,
 } from "../utils/wallets-util.js";
@@ -25,9 +32,10 @@ import {
 import { writeStealthStartBlock } from "./stealth/start-block-file.js";
 
 export async function findLastTouchedPublicIndex(
-  mnemonic: string,
+  mnemonic: string | WalletKeys,
   rpcUrl: string
 ): Promise<number> {
+  const keys = asWalletKeys(mnemonic);
   const client = await makePublicClient(rpcUrl);
   try {
     let start = 0;
@@ -36,7 +44,10 @@ export async function findLastTouchedPublicIndex(
 
     for (;;) {
       const indexes = Array.from({ length: WINDOW_SIZE }, (_, i) => start + i);
-      const addresses = peekAddressesFromMnemonic(mnemonic, indexes);
+      const addresses =
+        keys.kind === "seed"
+          ? peekAddressesFromMnemonic(keys.mnemonic, indexes)
+          : indexes.map((i) => publicAddressAt(keys, i));
       const touched = await Promise.all(
         addresses.map((address) => isAddressUsed(address, client))
       );
@@ -176,6 +187,61 @@ export async function createWalletOnDisk(
     mnemonic: mnemonicPhrase,
     stealthStartBlockWritten,
   };
+}
+
+export type CreateHardwareWalletOnDiskInput = {
+  dataDir: string;
+  walletName: string;
+  keys: LedgerKeys;
+  password: string;
+  testnet: boolean;
+  /** Scan the RPC for used public addresses and persist them. */
+  importMode: boolean;
+  rpcUrl?: string;
+};
+
+/**
+ * Hardware wallet: stores the encrypted account xpub, never a seed. No
+ * `.stealth-start-block`: stealth scanning needs seed-derived viewing keys.
+ */
+export async function createHardwareWalletOnDisk(
+  input: CreateHardwareWalletOnDiskInput
+): Promise<{ walletDir: string; importedAccounts: number }> {
+  const walletDir = resolveWalletDir(input.dataDir, input.walletName);
+  if (existsSync(walletDir)) {
+    throw new Error(`A wallet named "${input.walletName}" already exists.`);
+  }
+  if (input.importMode && !input.rpcUrl?.trim()) {
+    throw new Error("rpcUrl is required when importMode is true.");
+  }
+
+  let lastTouchedIndex = -1;
+  if (input.importMode) {
+    const expectedChainId = input.testnet ? 11155111n : 1n;
+    const client = await makePublicClient(input.rpcUrl!);
+    try {
+      const chainId = BigInt(await client.getChainId());
+      if (chainId !== expectedChainId) {
+        throw new Error(
+          `RPC chain ID ${chainId.toString()} does not match expected ${expectedChainId.toString()} for this wallet.`
+        );
+      }
+    } finally {
+      disposePublicClient(client);
+    }
+    lastTouchedIndex = await findLastTouchedPublicIndex(input.keys, input.rpcUrl!);
+  }
+
+  mkdirSync(walletDir, { recursive: true });
+  writeHardwareWallet(input.keys, input.password, walletDir);
+  writeWalletType(input.testnet ? "testnet" : "mainnet", walletDir);
+
+  if (lastTouchedIndex >= 0) {
+    makePublicAccountsStorage(walletDir, input.keys, input.password).addNextAccounts(
+      lastTouchedIndex + 1
+    );
+  }
+  return { walletDir, importedAccounts: lastTouchedIndex + 1 };
 }
 
 export { generateMnemonic };

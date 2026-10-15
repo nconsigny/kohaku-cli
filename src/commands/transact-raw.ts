@@ -27,7 +27,8 @@ import {
   type FeePreview,
 } from "../utils/fee-preview.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
-import { readSeedKeystore } from "../utils/mnemonic";
+import { readWalletKeys } from "../utils/mnemonic";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -37,8 +38,9 @@ import {
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { withTor } from "../utils/tor";
+import { delegationPreviewLine } from "../utils/eip7702-consent.js";
 import { resolveAddressOrName } from "../utils/resolve-name.js";
-import { makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
+import { makeWalletClient, sendTransactionAndWait, type SignerKey } from "../utils/viem-tx.js";
 import { resolveTokenMeta } from "../utils/tokens-util";
 import {
   resolveWalletDir,
@@ -278,14 +280,14 @@ export function registerTransactRawCommand(program: Command): void {
         flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
-          readSeedKeystore(candidate, walletDir);
+          readWalletKeys(candidate, walletDir);
         },
       });
       if (!password) return;
 
-      let mnemonic: string;
+      let walletKeys: WalletKeys;
       try {
-        mnemonic = readSeedKeystore(password, walletDir);
+        walletKeys = readWalletKeys(password, walletDir);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -329,7 +331,7 @@ export function registerTransactRawCommand(program: Command): void {
         const accounts = await listPublicAccountsWithBalance(
           rpcUrl,
           walletDir,
-          mnemonic,
+          walletKeys,
           password,
           ethMeta
         );
@@ -364,18 +366,18 @@ export function registerTransactRawCommand(program: Command): void {
       }
 
       let senderAddress: string;
-      let senderPrivateKey: string | undefined;
+      let senderKey: SignerKey | undefined;
       try {
         const resolved = resolveShieldSender({
           fromValue,
           walletDir,
-          mnemonic,
+          mnemonic: walletKeys,
           password,
           dryRun,
           allowDeriveFromMnemonic: !!opts.fromPriv,
         });
         senderAddress = resolved.senderAddress;
-        senderPrivateKey = resolved.senderPrivateKey;
+        senderKey = resolved.senderKey;
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -433,7 +435,7 @@ export function registerTransactRawCommand(program: Command): void {
               chainId,
               senderAddress,
               calls: rawTxs,
-              privateKey: senderPrivateKey,
+              signer: senderKey,
               ...eip7702Tor,
             });
           } else {
@@ -469,11 +471,7 @@ export function registerTransactRawCommand(program: Command): void {
             printDryRunInteractive(transactions, senderAddress, batchAsUserOp);
             if (batchAsUserOp) {
               console.log(
-                chalk.dim(
-                  needsDelegation
-                    ? "EIP-7702 delegation will be included in the UserOp."
-                    : "Account already delegates to Simple7702; UserOp skips re-authorization."
-                )
+                chalk.yellow(delegationPreviewLine(senderAddress, !!needsDelegation))
               );
             }
             printFeePreview(fees);
@@ -488,7 +486,7 @@ export function registerTransactRawCommand(program: Command): void {
           return;
         }
 
-        if (!senderPrivateKey) {
+        if (!senderKey) {
           cliError(
             "Cannot sign: no private key for this --from (use a saved public account or --from-priv with --broadcast)."
           );
@@ -501,7 +499,7 @@ export function registerTransactRawCommand(program: Command): void {
             chainId,
             senderAddress,
             calls: rawTxs,
-            privateKey: senderPrivateKey,
+            signer: senderKey,
             ...eip7702Tor,
           });
           await maybeConfirm(
@@ -519,9 +517,10 @@ export function registerTransactRawCommand(program: Command): void {
             async () =>
               sendEip7702BatchUserOperation({
                 client,
-                privateKey: senderPrivateKey,
+                signer: senderKey,
                 chainId,
                 calls: rawTxs,
+                nonInteractive: !!opts.nonInteractive,
                 ...eip7702Tor,
               }),
             (t) =>
@@ -553,7 +552,7 @@ export function registerTransactRawCommand(program: Command): void {
           return;
         }
 
-        const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
+        const walletClient = makeWalletClient(senderKey, client, rpcUrl);
         const broadcastResults: Array<{ index: number; hash: string }> = [];
 
         for (let i = 0; i < rawTxs.length; i++) {

@@ -10,6 +10,12 @@ import {
   isEncryptedEnvelopeV1,
   type EncryptedEnvelopeV1,
 } from "./aes-storage";
+import {
+  HardwareWalletUnsupportedError,
+  isHardwareWallet,
+  readHardwareWallet,
+  type WalletKeys,
+} from "./wallet-keys.js";
 
 /**
  * On-disk name for the encrypted BIP-39 seed file under each wallet directory
@@ -85,6 +91,9 @@ export function writeSeedKeystore(
  */
 export function readSeedKeystore(password: string, walletDir: string): string {
   const filePath = join(walletDir, SEED_FILENAME);
+  if (!existsSync(filePath) && isHardwareWallet(walletDir)) {
+    throw new HardwareWalletUnsupportedError();
+  }
   if (!existsSync(filePath)) {
     throw new Error(`Seed keystore not found: ${filePath}`);
   }
@@ -104,6 +113,14 @@ export function readSeedKeystore(password: string, walletDir: string): string {
     throw new Error("Decrypted data is not a valid BIP-39 mnemonic");
   }
   return phrase;
+}
+
+/** Unlocks a seed or hardware wallet; use for commands that only sign publicly. */
+export function readWalletKeys(password: string, walletDir: string): WalletKeys {
+  if (isHardwareWallet(walletDir)) {
+    return readHardwareWallet(password, walletDir);
+  }
+  return { kind: "seed", mnemonic: readSeedKeystore(password, walletDir) };
 }
 
 export function generateMnemonic(strength: 128 | 256 = 128): string {

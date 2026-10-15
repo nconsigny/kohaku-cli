@@ -9,12 +9,14 @@ import {
   type Address,
   type Hash,
   type Hex,
+  type LocalAccount,
+  type SignedAuthorization,
 } from "viem";
 import {
   createBundlerClient,
   toSimple7702SmartAccount,
 } from "viem/account-abstraction";
-import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
+import type { PrivateKeyAccount } from "viem/accounts";
 
 import {
   buildFeePreview,
@@ -27,7 +29,9 @@ import {
   type KohakuPublicClient,
 } from "./rpc.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "./simple-7702.js";
+import { signDelegation } from "./eip7702-consent.js";
 import { withTor } from "./tor.js";
+import { toLocalAccount, type SignerKey } from "./viem-tx.js";
 
 const BUNDLER_HTTP_TIMEOUT_MS = 180_000;
 const RECEIPT_WAIT_MS = 180_000;
@@ -58,11 +62,6 @@ export type Eip7702TorOpts = {
   /** Disable Tor for this call (also honors KOHAKU_WITHOUT_TOR). */
   withoutTor?: boolean;
 };
-
-function normalizePrivateKey(priv: string): Hex {
-  const hex = priv.startsWith("0x") ? priv : `0x${priv}`;
-  return hex as Hex;
-}
 
 function hasNonEmptyCode(code: string | undefined | null): boolean {
   const c = (code ?? "0x").trim().toLowerCase();
@@ -105,20 +104,52 @@ export async function needsSimple7702Authorization(
   return true;
 }
 
-async function signAuthIfNeeded(
-  client: KohakuPublicClient,
-  owner: PrivateKeyAccount,
-  needsAuth: boolean
-) {
-  if (!needsAuth) return undefined;
+/**
+ * viem types the Simple7702 owner as a PrivateKeyAccount, but only uses its
+ * address, signMessage and signTypedData, which hardware accounts provide.
+ */
+function asSimple7702Owner(owner: LocalAccount): PrivateKeyAccount {
+  return owner as PrivateKeyAccount;
+}
+
+async function delegationRequest(client: KohakuPublicClient, owner: LocalAccount) {
   const nonce = await client.getTransactionCount({
     address: owner.address,
     blockTag: "pending",
   });
-  return owner.signAuthorization({
-    address: SIMPLE_7702_IMPLEMENTATION,
-    chainId: client.chain.id,
-    nonce,
+  return { address: SIMPLE_7702_IMPLEMENTATION, chainId: client.chain.id, nonce };
+}
+
+/**
+ * Unsigned stand-in for fee estimation (viem's own stub values), so a dry run
+ * or estimate never asks a key, or a Ledger, to sign a delegation.
+ */
+async function stubAuthIfNeeded(
+  client: KohakuPublicClient,
+  owner: LocalAccount,
+  needsAuth: boolean
+): Promise<SignedAuthorization | undefined> {
+  if (!needsAuth) return undefined;
+  return {
+    ...(await delegationRequest(client, owner)),
+    r: "0xfffffffffffffffffffffffffffffff000000000000000000000000000000000",
+    s: "0x7aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    yParity: 1,
+  };
+}
+
+async function signAuthIfNeeded(
+  client: KohakuPublicClient,
+  owner: LocalAccount,
+  needsAuth: boolean,
+  nonInteractive: boolean
+): Promise<SignedAuthorization | undefined> {
+  if (!needsAuth) return undefined;
+  return signDelegation({
+    owner,
+    request: await delegationRequest(client, owner),
+    chain: client.chain,
+    nonInteractive,
   });
 }
 
@@ -180,7 +211,8 @@ export async function estimateEip7702BatchUserOpFee(
     chainId: bigint;
     senderAddress: string;
     calls: readonly Eip7702BatchCall[];
-    privateKey?: string;
+    /** Without it the fee is a rough estimate (no bundler prepare). */
+    signer?: SignerKey;
   } & Eip7702TorOpts
 ): Promise<FeePreview> {
   if (opts.calls.length === 0) {
@@ -191,15 +223,15 @@ export async function estimateEip7702BatchUserOpFee(
     !opts.withoutTor,
     { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
     async () => {
-      if (opts.privateKey) {
-        const owner = privateKeyToAccount(normalizePrivateKey(opts.privateKey));
+      if (opts.signer) {
+        const owner = toLocalAccount(opts.signer);
         const needsAuth = await needsSimple7702Authorization(
           opts.client,
           owner.address
         );
         const account = await toSimple7702SmartAccount({
           client: opts.client,
-          owner,
+          owner: asSimple7702Owner(owner),
           implementation: SIMPLE_7702_IMPLEMENTATION,
         });
         const { bundlerClient } = createPimlicoBundlerClient({
@@ -207,7 +239,7 @@ export async function estimateEip7702BatchUserOpFee(
           account,
           chainId: opts.chainId,
         });
-        const authorization = await signAuthIfNeeded(
+        const authorization = await stubAuthIfNeeded(
           opts.client,
           owner,
           needsAuth
@@ -256,9 +288,11 @@ export async function estimateEip7702BatchUserOpFee(
 export async function sendEip7702BatchUserOperation(
   opts: {
     client: KohakuPublicClient;
-    privateKey: string;
+    signer: SignerKey;
     chainId: bigint;
     calls: readonly Eip7702BatchCall[];
+    /** Interactive runs confirm a first-time delegation before it is signed. */
+    nonInteractive: boolean;
   } & Eip7702TorOpts
 ): Promise<Eip7702BatchUserOpResult> {
   if (opts.calls.length === 0) {
@@ -269,7 +303,7 @@ export async function sendEip7702BatchUserOperation(
     !opts.withoutTor,
     { rpcUrl: opts.rpcUrl, walletDir: opts.walletDir },
     async () => {
-      const owner = privateKeyToAccount(normalizePrivateKey(opts.privateKey));
+      const owner = toLocalAccount(opts.signer);
       const needsAuth = await needsSimple7702Authorization(
         opts.client,
         owner.address
@@ -277,7 +311,7 @@ export async function sendEip7702BatchUserOperation(
 
       const account = await toSimple7702SmartAccount({
         client: opts.client,
-        owner,
+        owner: asSimple7702Owner(owner),
         implementation: SIMPLE_7702_IMPLEMENTATION,
       });
 
@@ -290,7 +324,8 @@ export async function sendEip7702BatchUserOperation(
       const authorization = await signAuthIfNeeded(
         opts.client,
         owner,
-        needsAuth
+        needsAuth,
+        opts.nonInteractive
       );
       const calls = toCalls(opts.calls);
 

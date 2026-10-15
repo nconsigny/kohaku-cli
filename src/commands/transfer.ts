@@ -36,7 +36,8 @@ import {
   type FeePreview,
 } from "../utils/fee-preview.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
-import { readSeedKeystore } from "../utils/mnemonic";
+import { readWalletKeys } from "../utils/mnemonic";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 import {
   DEFAULT_DATA_DIR,
   getRpcChainIdMatchingWallet,
@@ -45,9 +46,15 @@ import {
   resolveRpcUrl,
 } from "../utils/rpc";
 import { runWithWalletTrafficLog, withTor } from "../utils/tor";
+import { delegationPreviewLine } from "../utils/eip7702-consent.js";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { looksLikeName, resolveAddressOrName } from "../utils/resolve-name.js";
-import { encodeContractCall, makeWalletClient, sendTransactionAndWait } from "../utils/viem-tx.js";
+import {
+  encodeContractCall,
+  makeWalletClient,
+  sendTransactionAndWait,
+  type SignerKey,
+} from "../utils/viem-tx.js";
 import { ERC20_ABI, resolveTokenMeta, type ResolvedTokenMeta } from "../utils/tokens-util";
 import {
   estimateEthTransferGasReserveWei,
@@ -268,14 +275,14 @@ export function registerTransferCommand(program: Command): void {
         flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
-          readSeedKeystore(candidate, walletDir);
+          readWalletKeys(candidate, walletDir);
         },
       });
       if (!password) return;
 
-      let mnemonic: string;
+      let walletKeys: WalletKeys;
       try {
-        mnemonic = readSeedKeystore(password, walletDir);
+        walletKeys = readWalletKeys(password, walletDir);
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -346,7 +353,7 @@ export function registerTransferCommand(program: Command): void {
       const withBalances = await listPublicAccountsWithBalance(
         rpcUrl,
         walletDir,
-        mnemonic,
+        walletKeys,
         password,
         tokenMeta
       );
@@ -538,18 +545,18 @@ export function registerTransferCommand(program: Command): void {
       }
 
       let senderAddress: string;
-      let senderPrivateKey: string | undefined;
+      let senderKey: SignerKey | undefined;
       try {
         const resolved = resolveShieldSender({
           fromValue,
           walletDir,
-          mnemonic,
+          mnemonic: walletKeys,
           password,
           dryRun,
           allowDeriveFromMnemonic: !!opts.fromPriv,
         });
         senderAddress = resolved.senderAddress;
-        senderPrivateKey = resolved.senderPrivateKey;
+        senderKey = resolved.senderKey;
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -623,7 +630,7 @@ export function registerTransferCommand(program: Command): void {
             chainId,
             senderAddress,
             calls: txs,
-            privateKey: senderPrivateKey,
+            signer: senderKey,
             ...eip7702Tor,
           });
           const needsDelegation = await needsSimple7702Authorization(
@@ -663,7 +670,7 @@ export function registerTransferCommand(program: Command): void {
                 `Stealth transfer ${amountPreview} from ${senderAddress} → ${recipientAddress}`
               )
             );
-            console.log(chalk.dim(`Implementation: ${SIMPLE_7702_IMPLEMENTATION}`));
+            console.log(chalk.yellow(delegationPreviewLine(senderAddress, needsDelegation)));
             console.log(chalk.cyan("Transfer call:"), jsonStringifyWithBigInt(payloads[0]!));
             console.log(chalk.cyan("Announce call:"), jsonStringifyWithBigInt(payloads[1]!));
             console.log(
@@ -717,7 +724,7 @@ export function registerTransferCommand(program: Command): void {
             return;
           }
 
-          if (!senderPrivateKey) {
+          if (!senderKey) {
             cliError(
               "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
             );
@@ -729,7 +736,7 @@ export function registerTransferCommand(program: Command): void {
             `Send transfer: ${amountPreview} from ${senderAddress} to ${recipientAddress}?\n  ${feeConfirmLine(fees)}`
           );
 
-          const walletClient = makeWalletClient(senderPrivateKey, client, rpcUrl);
+          const walletClient = makeWalletClient(senderKey, client, rpcUrl);
           const hash = await runQuietSpinner(
             quiet,
             txSpinner,
@@ -761,7 +768,7 @@ export function registerTransferCommand(program: Command): void {
           return;
         }
 
-        if (!senderPrivateKey) {
+        if (!senderKey) {
           cliError(
             "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
           );
@@ -778,7 +785,7 @@ export function registerTransferCommand(program: Command): void {
               chainId,
               senderAddress,
               calls: txs,
-              privateKey: senderPrivateKey,
+              signer: senderKey,
               ...eip7702Tor,
             });
             await maybeConfirm(
@@ -797,9 +804,10 @@ export function registerTransferCommand(program: Command): void {
               async () =>
                 sendEip7702BatchUserOperation({
                   client,
-                  privateKey: senderPrivateKey,
+                  signer: senderKey,
                   chainId,
                   calls: txs,
+                  nonInteractive: !!opts.nonInteractive,
                   ...eip7702Tor,
                 }),
               (t) =>

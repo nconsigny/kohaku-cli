@@ -47,6 +47,7 @@ import {
   makeWalletClient,
   sendTransactionAndWait,
   simulateCallOrThrow,
+  type SignerKey,
 } from "../utils/viem-tx.js";
 import { jsonStringifyWithBigInt } from "../utils/json-bigint";
 import {
@@ -59,6 +60,7 @@ import {
 } from "../utils/rpc";
 import { SIMPLE_7702_IMPLEMENTATION } from "../utils/simple-7702.js";
 import { withTor } from "../utils/tor";
+import { delegationPreviewLine } from "../utils/eip7702-consent.js";
 import {
   runWithSyncProgress,
   syncPluginWithProgress,
@@ -71,7 +73,8 @@ import {
   resolveWalletNameOrPrompt,
   resolveWalletPassword,
 } from "../utils/wallets-util";
-import { readSeedKeystore } from "../utils/mnemonic";
+import { readWalletKeys } from "../utils/mnemonic";
+import type { WalletKeys } from "../utils/wallet-keys.js";
 import {
   assertPpErc20TokenWhitelisted,
   createProtocolPlugin,
@@ -366,16 +369,20 @@ export function registerShieldCommand(program: Command): void {
         flagPasswordFile: opts.passwordFile,
         nonInteractive: opts.nonInteractive,
         validate: (candidate) => {
-          readSeedKeystore(candidate, walletDir);
+          readWalletKeys(candidate, walletDir);
         },
       });
       if (!password) return;
 
-      let mnemonic: string;
+      let walletKeys: WalletKeys;
       try {
-        mnemonic = readSeedKeystore(password, walletDir);
+        walletKeys = readWalletKeys(password, walletDir);
       } catch (e) {
         cliErrorFromCaught(e);
+        return;
+      }
+      if (walletKeys.kind !== "seed" && protocol !== "tornado") {
+        cliError("Ledger wallets support Tornado only for now (Railgun and Privacy Pools need the seed).");
         return;
       }
 
@@ -457,7 +464,7 @@ export function registerShieldCommand(program: Command): void {
       const withBalances = await listPublicAccountsWithBalance(
         rpcUrl,
         walletDir,
-        mnemonic,
+        walletKeys,
         password,
         tokenMeta
       );
@@ -664,18 +671,18 @@ export function registerShieldCommand(program: Command): void {
       }
 
       let senderAddress: string;
-      let senderPrivateKey: string | undefined;
+      let senderKey: SignerKey | undefined;
       try {
         const resolved = resolveShieldSender({
           fromValue,
           walletDir,
-          mnemonic,
+          mnemonic: walletKeys,
           password,
           dryRun,
           allowDeriveFromMnemonic: !!opts.fromPriv,
         });
         senderAddress = resolved.senderAddress;
-        senderPrivateKey = resolved.senderPrivateKey;
+        senderKey = resolved.senderKey;
       } catch (e) {
         cliErrorFromCaught(e);
         return;
@@ -711,7 +718,7 @@ export function registerShieldCommand(program: Command): void {
           rpc: rpcForHost,
           walletDir,
           password,
-          mnemonic,
+          mnemonic: walletKeys,
           pluginId: pluginIdForProtocol(protocol),
           chainId,
         });
@@ -886,7 +893,7 @@ export function registerShieldCommand(program: Command): void {
               chainId,
               senderAddress,
               calls,
-              privateKey: senderPrivateKey,
+              signer: senderKey,
               ...eip7702Tor,
             });
           } else {
@@ -944,11 +951,7 @@ export function registerShieldCommand(program: Command): void {
             );
             if (batchAsUserOp) {
               console.log(
-                chalk.dim(
-                  needsDelegation
-                    ? "EIP-7702 delegation will be included in the UserOp."
-                    : "Account already delegates to Simple7702; UserOp skips re-authorization."
-                )
+                chalk.yellow(delegationPreviewLine(senderAddress, !!needsDelegation))
               );
               if (shieldTxs.length > 1) {
                 console.log(
@@ -971,7 +974,7 @@ export function registerShieldCommand(program: Command): void {
           return;
         }
 
-        if (!senderPrivateKey) {
+        if (!senderKey) {
           cliError(
             "Cannot sign: no private key for this --from (use a saved public/stealth account or --from-priv with --broadcast)."
           );
@@ -999,9 +1002,10 @@ export function registerShieldCommand(program: Command): void {
             async () =>
               sendEip7702BatchUserOperation({
                 client: rpcForHost,
-                privateKey: senderPrivateKey,
+                signer: senderKey,
                 chainId,
                 calls,
+                nonInteractive: !!opts.nonInteractive,
                 ...eip7702Tor,
               }),
             (t) =>
@@ -1045,7 +1049,7 @@ export function registerShieldCommand(program: Command): void {
           );
 
           const walletClient = makeWalletClient(
-            senderPrivateKey,
+            senderKey,
             rpcForHost,
             rpcUrl
           );

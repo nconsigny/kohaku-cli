@@ -13,6 +13,7 @@ import {
   makeWalletClient,
   sendTransactionAndWait,
   simulateCallOrThrow,
+  type SignerKey,
 } from "../../utils/viem-tx.js";
 import { MIN_COMMITMENT_AGE_SECONDS } from "./constants.js";
 import type { PreparedTx } from "./types.js";
@@ -133,13 +134,13 @@ export async function simulatePreparedTxs(
 export async function broadcastPreparedTxs(opts: {
   client: KohakuPublicClient;
   rpcUrl: string;
-  privateKey: string;
+  signer: SignerKey;
   from: Address;
   txs: PreparedTx[];
   nonInteractive: boolean;
   confirmMessage?: string;
 }): Promise<`0x${string}`[]> {
-  const { client, rpcUrl, privateKey, from, txs, nonInteractive } = opts;
+  const { client, rpcUrl, signer, from, txs, nonInteractive } = opts;
 
   const feePreviews = [];
   for (const t of txs) {
@@ -160,7 +161,7 @@ export async function broadcastPreparedTxs(opts: {
     `Broadcast ${txs.length} transaction(s) from ${from}? ${feeConfirmLine(feePreviews[0]!)}`;
   await maybeConfirm(nonInteractive, msg);
 
-  const wallet = makeWalletClient(privateKey, client, rpcUrl);
+  const wallet = makeWalletClient(signer, client, rpcUrl);
   const hashes: `0x${string}`[] = [];
   for (const t of txs) {
     if (!nonInteractive) {

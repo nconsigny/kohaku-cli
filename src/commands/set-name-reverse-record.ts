@@ -50,7 +50,7 @@ export function registerSetNameReverseRecordCommand(program: Command): void {
       const signer = resolveNameSigner({
         requiredAddress: ownership.owner,
         walletDir: ctx.walletDir,
-        mnemonic: ctx.mnemonic,
+        mnemonic: ctx.walletKeys,
         password: ctx.password,
         indexFlag: opts.index,
         ownerPriv: ctx.ownerPriv,
@@ -88,14 +88,14 @@ export function registerSetNameReverseRecordCommand(program: Command): void {
         return;
       }
 
-      if (!signer.privateKey) {
+      if (!signer.signerKey) {
         throw new Error("Missing private key for broadcast. Pass --owner-priv if needed.");
       }
 
       const [hash] = await broadcastPreparedTxs({
         client: ctx.client,
         rpcUrl: ctx.rpcUrl,
-        privateKey: signer.privateKey,
+        signer: signer.signerKey,
         from: signer.address,
         txs: [tx],
         nonInteractive: ctx.nonInteractive,
